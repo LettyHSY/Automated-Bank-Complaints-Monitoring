@@ -1,0 +1,658 @@
+---
+title: "Credit Card Word Frequency and Topic Model"
+author: "Shiyi Hua"
+date: "2/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+## Library required packages
+library(tidyverse)
+library(tidytext)
+library(textstem)
+library(scales)
+library(SnowballC)
+library(LDAvis)
+library(topicmodels)
+```
+
+
+```{r}
+## Import relevant dataset
+data_credit_card = read_csv('data/credit card total data.csv')
+```
+
+
+```{r}
+## Label monetary and non-monetary
+data_credit_card <- data_credit_card %>% 
+  mutate(important = ifelse(`Company response to consumer` == "Closed with monetary relief", 1, 0))
+
+table(data_credit_card$important) ## monetary: 7186 vs. non-monetary: 27825
+```
+
+
+*Word Frequency (Unigram)*
+```{r}
+customWords <- c("xxxx", "xx", "credit", "card", "bank")
+
+## Monetary
+wordFreq_uni_mone <- data_credit_card %>%
+  filter(important == 1) %>%
+  unnest_tokens(word, `Consumer complaint narrative`) %>%
+  mutate(lemma = lemmatize_words(word)) %>%
+  filter(!lemma %in% customWords) %>%
+  anti_join(stop_words, by = c("lemma" = "word")) %>%
+  count(lemma, sort = T) %>%
+  slice(1:25)
+
+ggplot(wordFreq_uni_mone, aes(x = fct_reorder(lemma, n), y = n)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(x='Word',
+       y='Word  Frequency',
+       title = 'Top 25 Words for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card'
+        )
+```
+
+```{r}
+## Non-monetary
+wordFreq_uni_non <- data_credit_card %>%
+  filter(important == 0) %>%
+  unnest_tokens(word, `Consumer complaint narrative`) %>%
+  mutate(lemma = lemmatize_words(word)) %>%
+  filter(!lemma %in% customWords) %>%
+  anti_join(stop_words, by = c("lemma" = "word")) %>%
+  count(lemma, sort = T) %>%
+  slice(1:25)
+
+ggplot(wordFreq_uni_non, aes(x = fct_reorder(lemma, n), y = n)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(x='Word',
+       y='Word  Frequency',
+       title = 'Top 25 Words for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card'
+        )
+```
+
+
+*Word Frequency (Bigram)*
+```{r}
+## Monetary
+wordFreq_bi_mone <- data_credit_card %>%
+  filter(important == 1) %>%
+  unnest_tokens(bigram, `Consumer complaint narrative`, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ", remove = F) %>%
+  mutate(lemma1 = lemmatize_words(word1), lemma2 = lemmatize_words(word2)) %>%
+  filter(!lemma1 %in% stop_words$word,
+         !lemma2 %in% stop_words$word,
+         !lemma1 %in% customWords,
+         !lemma2 %in% customWords
+  ) %>%
+  unite("bigram_lemma", lemma1:lemma2, sep = " ", remove = F) %>%
+  count(bigram_lemma, sort = T) %>%
+  slice(1:25)
+
+ggplot(wordFreq_bi_mone, aes(x = fct_reorder(bigram_lemma, n), y = n)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(x='Bigram',
+       y='Bigram  Frequency',
+       title = 'Top 25 Bigrams for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card'
+        )
+```
+
+```{r}
+## Non-monetary
+wordFreq_bi_non <- data_credit_card %>%
+  filter(important == 0) %>%
+  unnest_tokens(bigram, `Consumer complaint narrative`, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ", remove = F) %>%
+  mutate(lemma1 = lemmatize_words(word1), lemma2 = lemmatize_words(word2)) %>%
+  filter(!lemma1 %in% stop_words$word,
+         !lemma2 %in% stop_words$word,
+         !lemma1 %in% customWords,
+         !lemma2 %in% customWords
+  ) %>%
+  unite("bigram_lemma", lemma1:lemma2, sep = " ", remove = F) %>%
+  count(bigram_lemma, sort = T) %>%
+  slice(1:25)
+
+ggplot(wordFreq_bi_non, aes(x = fct_reorder(bigram_lemma, n), y = n)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(x='Bigram',
+       y='Bigram  Frequency',
+       title = 'Top 25 Bigrams for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card'
+        )
+```
+
+
+*Topic Model (Unigram)*
+```{r}
+## Monetary
+complaints_mone <- data_credit_card %>%
+  filter(important == 1) %>%
+  unnest_tokens(word, `Consumer complaint narrative`) %>%
+  anti_join(stop_words) %>%
+  mutate(lemma = lemmatize_words(word))
+
+wordCount <- complaints_mone %>%
+  count(lemma,sort = T) %>%
+  filter(n >= 20) # Remove infrequent words
+
+complaints_mone <- complaints_mone %>%
+  filter(lemma %in% wordCount$lemma) %>%
+  filter(!lemma %in% customWords)
+
+dtmUni <- complaints_mone %>%
+  count(`Complaint ID`,lemma) %>%
+  cast_dtm(`Complaint ID`, lemma, n)
+
+numTopics <- c(10, 15, 20)
+
+for (theNum in c(1:length(numTopics))) {
+  theLDA <- LDA(dtmUni, k = numTopics[theNum], method = "Gibbs",
+                control = list(alpha = 1 / numTopics[theNum], iter = 5000, burnin = 10000, seed = 1234))
+  saveRDS(theLDA, file = paste0('data/ccmonetary', numTopics[theNum], '.rds'))
+}
+
+## 5 Topics
+theLDA_5M <- LDA(dtmUni, k = 5, method = "Gibbs", control = list(alpha = 1 / 5, iter = 5000, burnin = 10000, seed = 1234))
+saveRDS(theLDA_5M, file = paste0('data/ccmonetary', 5, '.rds'))
+
+theLDA_5 <- read_rds(paste0('data/ccmonetary', 5, '.rds'))
+
+theTopicsBeta_5 <- tidy(theLDA_5, matrix = "beta")
+
+TopicsTop_5 <- theTopicsBeta_5 %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1)  # for plotting
+
+plTopicWeights_5 <- TopicsTop_5 %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_5$x,
+                     labels = TopicsTop_5$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 5 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 10 Topics
+theLDA_10 <- read_rds(paste0('data/ccmonetary', 10, '.rds'))
+
+theTopicsBeta_10 <- tidy(theLDA_10, matrix = "beta")
+
+TopicsTop_10 <- theTopicsBeta_10 %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_10 <- TopicsTop_10 %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_10$x,
+                     labels = TopicsTop_10$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 10 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 15 Topics
+theLDA_15 <- read_rds(paste0('data/ccmonetary', 15, '.rds'))
+
+theTopicsBeta_15 <- tidy(theLDA_15, matrix = "beta")
+
+TopicsTop_15 <- theTopicsBeta_15 %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_15 <- TopicsTop_15 %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_15$x,
+                     labels = TopicsTop_15$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 15 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 20 Topics
+theLDA_20 <- read_rds(paste0('data/ccmonetary', 20, '.rds'))
+
+theTopicsBeta_20 <- tidy(theLDA_20, matrix = "beta")
+
+TopicsTop_20 <- theTopicsBeta_20 %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_20 <- TopicsTop_20 %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_20$x,
+                     labels = TopicsTop_20$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 20 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+```
+
+
+```{r}
+## Non-monetary
+complaints_non <- data_credit_card %>%
+  filter(important == 0) %>%
+  unnest_tokens(word, `Consumer complaint narrative`) %>%
+  anti_join(stop_words) %>%
+  mutate(lemma = lemmatize_words(word))
+
+wordCount_non <- complaints_non %>%
+  count(lemma,sort = T) %>%
+  filter(n >= 20) ## Remove infrequent words
+
+complaints_non <- complaints_non %>%
+  filter(lemma %in% wordCount_non$lemma) %>%
+  filter(!lemma %in% customWords)
+
+dtmUni_non <- complaints_non %>%
+  count(`Complaint ID`,lemma) %>%
+  cast_dtm(`Complaint ID`, lemma, n)
+
+
+for (theNum in c(1:length(numTopics))) {
+  theLDA <- LDA(dtmUni_non, k = numTopics[theNum], method = "Gibbs",
+                control = list(alpha = 1 / numTopics[theNum], iter = 5000, burnin = 10000, seed = 1234))
+  saveRDS(theLDA, file = paste0('data/ccnon', numTopics[theNum], '.rds'))
+}
+
+## 5 Topics
+theLDA_5N <- LDA(dtmUni_non, k = 5, method = "Gibbs",
+                control = list(alpha = 1 / 5, iter = 5000, burnin = 10000, seed = 1234))
+saveRDS(theLDA_5N, file = paste0('data/ccnon', 5, '.rds'))
+
+theLDA_5_non <- read_rds(paste0('data/ccnon', 5, '.rds'))
+
+theTopicsBeta_5_non <- tidy(theLDA_5_non, matrix = "beta")
+
+TopicsTop_5_non <- theTopicsBeta_5_non %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_5_non <- TopicsTop_5_non %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_5_non$x,
+                     labels = TopicsTop_5_non$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 5 Topics for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 10 Topics
+theLDA_10_non <- read_rds(paste0('data/ccnon', 10, '.rds'))
+
+theTopicsBeta_10_non <- tidy(theLDA_10_non, matrix = "beta")
+
+TopicsTop_10_non <- theTopicsBeta_10_non %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_10_non <- TopicsTop_10_non %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_10_non$x,
+                     labels = TopicsTop_10_non$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 10 Topics for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 15 Topics
+theLDA_15_non <- read_rds(paste0('data/ccnon', 15, '.rds'))
+
+theTopicsBeta_15_non <- tidy(theLDA_15_non, matrix = "beta")
+
+TopicsTop_15_non <- theTopicsBeta_15_non %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_15_non <- TopicsTop_15_non %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_15_non$x,
+                     labels = TopicsTop_15_non$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Words by 15 Topics for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'word',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+```
+
+
+*Topic Model (Bigram)*
+```{r}
+## Monetary
+complaints_mone_bi <- data_credit_card %>%
+  filter(important == 1) %>%
+  unnest_tokens(bigram, `Consumer complaint narrative`, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ", remove = F) %>%
+  mutate(lemma1 = lemmatize_words(word1), lemma2 = lemmatize_words(word2)) %>%
+  filter(!lemma1 %in% stop_words$word,
+         !lemma2 %in% stop_words$word,
+         !lemma1 %in% customWords,
+         !lemma2 %in% customWords
+  ) %>%
+  unite("bigram_lemma", lemma1:lemma2, sep = " ", remove = F)
+
+wordCount_mone_bi <- complaints_mone_bi %>%
+  count(bigram_lemma,sort = T) %>%
+  filter(n >= 20) ## Remove infrequent words
+
+complaints_mone_bi <- complaints_mone_bi %>%
+  filter(bigram_lemma %in% wordCount_mone_bi$bigram_lemma)
+
+dtmBi <- complaints_mone_bi %>%
+  count(`Complaint ID`,bigram_lemma) %>%
+  cast_dtm(`Complaint ID`, bigram_lemma, n)
+
+numTopics <- c(5, 10, 15)
+
+for (theNum in c(1:length(numTopics))) {
+  theLDA <- LDA(dtmBi, k = numTopics[theNum], method = "Gibbs",
+                control = list(alpha = 1 / numTopics[theNum], iter = 5000, burnin = 10000, seed = 1234))
+  saveRDS(theLDA, file = paste0('data/ccmonetaryBI', numTopics[theNum], '.rds'))
+}
+
+## 5 Topics Bigram
+theLDA_5Bi <- read_rds(paste0('data/ccmonetaryBI', 5, '.rds'))
+
+theTopicsBeta_5Bi <- tidy(theLDA_5Bi, matrix = "beta")
+
+TopicsTop_5Bi <- theTopicsBeta_5Bi %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_5Bi <- TopicsTop_5Bi %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_5Bi$x,
+                     labels = TopicsTop_5Bi$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Bigrams by 5 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'bigram',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 10 Topics Bigram
+theLDA_10Bi <- read_rds(paste0('data/ccmonetaryBI', 10, '.rds'))
+
+theTopicsBeta_10Bi <- tidy(theLDA_10Bi, matrix = "beta")
+
+TopicsTop_10Bi <- theTopicsBeta_10Bi %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_10Bi <- TopicsTop_10Bi %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_10Bi$x,
+                     labels = TopicsTop_10Bi$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Bigrams by 10 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'bigram',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 15 Topics Bigram
+theLDA_15Bi <- read_rds(paste0('data/ccmonetaryBI', 15, '.rds'))
+
+theTopicsBeta_15Bi <- tidy(theLDA_15Bi, matrix = "beta")
+
+TopicsTop_15Bi <- theTopicsBeta_15Bi %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_15Bi <- TopicsTop_15Bi %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_15Bi$x,
+                     labels = TopicsTop_15Bi$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Bigrams by 15 Topics for Complaints of Monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'bigram',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+```
+
+```{r}
+## Non-monetary
+complaints_non_bi <- data_credit_card %>%
+  filter(important == 0) %>%
+  unnest_tokens(bigram, `Consumer complaint narrative`, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ", remove = F) %>%
+  mutate(lemma1 = lemmatize_words(word1), lemma2 = lemmatize_words(word2)) %>%
+  filter(!lemma1 %in% stop_words$word,
+         !lemma2 %in% stop_words$word,
+         !lemma1 %in% customWords,
+         !lemma2 %in% customWords
+  ) %>%
+  unite("bigram_lemma", lemma1:lemma2, sep = " ", remove = F)
+
+wordCount_non_bi <- complaints_non_bi %>%
+  count(bigram_lemma,sort = T) %>%
+  filter(n >= 20) ## Remove infrequent words
+
+complaints_non_bi <- complaints_non_bi %>%
+  filter(bigram_lemma %in% wordCount_non_bi$bigram_lemma)
+
+dtmBi_non <- complaints_non_bi %>%
+  count(`Complaint ID`,bigram_lemma) %>%
+  cast_dtm(`Complaint ID`, bigram_lemma, n)
+
+numTopics <- c(5, 10, 15)
+
+for (theNum in c(1:length(numTopics))) {
+  theLDA <- LDA(dtmBi_non, k = numTopics[theNum], method = "Gibbs",
+                control = list(alpha = 1 / numTopics[theNum], iter = 5000, burnin = 10000, seed = 1234))
+  saveRDS(theLDA, file = paste0('data/ccnonBI', numTopics[theNum], '.rds'))
+}
+
+## 5 Topics Bigram
+theLDA_5Bi_non <- read_rds(paste0('data/ccnonBI', 5, '.rds'))
+
+theTopicsBeta_5Bi_non <- tidy(theLDA_5Bi_non, matrix = "beta")
+
+TopicsTop_5Bi_non <- theTopicsBeta_5Bi_non %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1)  ## for plotting
+
+plTopicWeights_5Bi_non <- TopicsTop_5Bi_non %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_5Bi_non$x,
+                     labels = TopicsTop_5Bi_non$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Bigrams by 5 Topics for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'bigram',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 10 Topics Bigram
+theLDA_10Bi_non <- read_rds(paste0('data/ccnonBI', 10, '.rds'))
+
+theTopicsBeta_10Bi_non <- tidy(theLDA_10Bi_non, matrix = "beta")
+
+TopicsTop_10Bi_non <- theTopicsBeta_10Bi_non %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_10Bi_non <- TopicsTop_10Bi_non %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_10Bi_non$x,
+                     labels = TopicsTop_10Bi_non$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Bigrams by 10 Topics for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'bigram',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+
+## 15 Topics Bigram
+theLDA_15Bi_non <- read_rds(paste0('data/ccnonBI', 15, '.rds'))
+
+theTopicsBeta_15Bi_non <- tidy(theLDA_15Bi_non, matrix = "beta")
+
+TopicsTop_15Bi_non <- theTopicsBeta_15Bi_non %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  ungroup() %>%
+  mutate(x = n():1) ## for plotting
+
+plTopicWeights_15Bi_non <- TopicsTop_15Bi_non %>%
+  mutate(topic = factor(topic)) %>%
+  ggplot(aes(x = x, y = beta, fill = topic)) + 
+  geom_bar(stat = 'identity', show.legend = F) + 
+  coord_flip() + 
+  facet_wrap(~topic,scales = 'free') +
+  scale_x_continuous(breaks = TopicsTop_15Bi_non$x,
+                     labels = TopicsTop_15Bi_non$term,
+                     expand = c(0, 0)) + 
+  labs(title = 'Top 15 Bigrams by 15 Topics for Complaints of Non-monetary Relief',
+       subtitle = 'Product Line: Credit Card',
+       x = 'bigram',
+       y = 'beta')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=5),
+        axis.text.y = element_text(size = 6))
+```
+
+
+
